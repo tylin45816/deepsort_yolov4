@@ -1,4 +1,6 @@
 import argparse
+from math import inf
+from typing import final
 import torch
 import cv2
 import os
@@ -24,6 +26,14 @@ class VideoTracker(object):
 
         self.detector=build_detector(cfg,use_cuda=use_cuda)
         self.deepsort = build_deepsort(cfg, use_cuda=use_cuda)
+
+    def _xywh_to_xyxy(self, bbox_xywh,width,height):
+        x, y, w, h = bbox_xywh
+        x1 = max(int(x - w / 2), 0)
+        x2 = min(int(x + w / 2), width - 1)
+        y1 = max(int(y - h / 2), 0)
+        y2 = min(int(y + h / 2), height - 1)
+        return x1, y1, x2, y2
 
     def cal_dist(delf,x1,y1,x2,y2):
         return ((x2 - x1) ** 2 + (y2 - y1) ** 2) ** 0.5
@@ -61,7 +71,7 @@ class VideoTracker(object):
             idx_frame += 1
             if idx_frame % self.args.frame_interval:
                 continue
-            
+            print("===========Start a frame===========")
             start = time.time()
             _, ori_im = self.vdo.retrieve()
             im = cv2.cvtColor(ori_im, cv2.COLOR_BGR2RGB)
@@ -80,15 +90,18 @@ class VideoTracker(object):
             height, width = im.shape[:2]
             # sized = im.resize((self.m.width, self.m.height))
             sized=cv2.resize(im,(self.detector.width,self.detector.height))
-            # print(sized)
+            print(type(sized))
 
             boxes = do_detect(self.detector, sized, 0.5, 0.4, 1)
             boxes = torch.tensor(boxes)
-            
+            if len(boxes) == 0:
+                print("===No detection===")
+                continue
+            print("boxes\n",boxes)
             bbox = boxes[:, :4]
             print(boxes)
             bbox_xywh = bbox * torch.FloatTensor([[width, height, width, height]])
-            # print("torch.tensor",torch.FloatTensor([[width, height, width, height]]))
+            print("torch.tensor\n",torch.FloatTensor([[width, height, width, height]]))
             cls_conf = boxes[:, 5]
             classes = boxes[:,6]
             print("classes",classes)
@@ -105,15 +118,25 @@ class VideoTracker(object):
 
                 # do tracking
                 outputs = self.deepsort.update(bbox_xywh, cls_conf, im)
-                # outputs=[]
                 # draw boxes for visualization
+                im_crops = []
+                offset = 0
                 if len(outputs) > 0:
-                    bbox_xyxy = outputs[:, :4]
-                    identities = outputs[:, -1]
-                    ori_im = draw_boxes(ori_im, bbox_xyxy, identities)
-                # print("bbox",bbox_xyxy)
-                # print("id",identities)
-                print("current_detection",outputs)
+                    print("current_detection\n",outputs)
+                    for inform in outputs:
+                        x1, y1, x2, y2 = inform[:4]
+                        final_crops = ori_im[y1+offset:y2+offset, x1+offset:x2+offset]
+                        print("11111",(final_crops.shape))
+                        final_crops = cv2.resize(final_crops,(self.detector.width,self.detector.height))
+                        print("22222",(final_crops.shape))
+                        if len(final_crops) != 0:
+                            final_box = do_detect(self.detector,final_crops,0.7,0.4,1)
+                            print("==final_detect",final_box)
+                    
+                    # bbox_xyxy = outputs[:, :4]
+                    # print("bbox_xyxy\n",bbox_xyxy)
+                    # identities = outputs[:, -1]
+                    # ori_im = draw_boxes(ori_im, bbox_xyxy, identities)
                 
             np.random.seed(42)
             COLORS = np.random.randint(0, 255, size=(200, 3),dtype="uint8")
@@ -129,6 +152,7 @@ class VideoTracker(object):
             #     indexIDs.append(int(track[4]))
             #     bbx.append([track[0], track[1],track[2], track[3]])
             #     memory.append([track[0], track[1],track[2], track[3],track[5]])
+            
             # current_box = np.array(current_box,int)
             # bbx = np.array(bbx,int)
             # print("current_box\n",current_box)
@@ -181,6 +205,7 @@ class VideoTracker(object):
                                         
             end = time.time()
             print("time: {:.03f}s, fps: {:.03f}".format(end - start, 1 / (end - start)))
+            print("===========End of a frame===========")
 
             if self.args.display:
                 cv2.imshow("test", ori_im)
