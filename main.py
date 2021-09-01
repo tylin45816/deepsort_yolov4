@@ -1,5 +1,6 @@
 import argparse
 from math import inf
+from utils.sort.iou_matching import iou
 from numpy.core.fromnumeric import shape
 import torch
 import cv2
@@ -8,7 +9,7 @@ import time
 import numpy as np
 import random
 import copy
-from utils.utils import get_config, do_detect
+from utils.utils import get_config, do_detect,plot_boxes_cv2,load_class_names
 from utils.draw import draw_boxes
 from utils import build_detector, build_deepsort
 
@@ -50,9 +51,9 @@ class VideoTracker(object):
         self.im_width = int(self.vdo.get(cv2.CAP_PROP_FRAME_WIDTH))
         self.im_height = int(self.vdo.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
-        if self.args.save_path:
-            fourcc = cv2.VideoWriter_fourcc(*'MJPG')
-            self.writer = cv2.VideoWriter(self.args.save_path, fourcc, 20, (self.im_width, self.im_height))
+        # if self.args.save_path:
+        #     fourcc = cv2.VideoWriter_fourcc(*'MJPG')
+        #     self.writer = cv2.VideoWriter(self.args.save_path, fourcc, 20, (self.im_width, self.im_height))
 
         assert self.vdo.isOpened()
         return self
@@ -83,12 +84,33 @@ class VideoTracker(object):
             
             output.append([x1,y1,x2,y2,classes])
         return output
-    
+
+    def iou_cls_ids(self,bbx_cls,bbx_ids,iou_threshold):
+        match_list = []
+        for cls in bbx_cls:
+            area_cls = (cls[2]-cls[0]) * (cls[3]-cls[1])
+            for ids in bbx_ids:
+                iou_tl = [np.maximum(cls[0],ids[0]),np.maximum(cls[1],ids[1])]
+                iou_br = [np.minimum(cls[2],ids[2]),np.minimum(cls[3],ids[3])]
+                iou_w = np.maximum((iou_br[0] - iou_tl[0]) , 0)
+                iou_h = np.maximum((iou_br[1] - iou_tl[1]) , 0)
+                area_intersection = iou_w * iou_h
+                area_ids = (ids[2]-ids[0]) * (ids[3]-ids[1])
+                area_union = (area_cls + area_ids - area_intersection)
+                iou = np.maximum((area_intersection / area_union),0)
+                print("iou in iou_cls_ids",iou)
+                if iou > iou_threshold:
+                    match_list.append([ids[0],ids[1],ids[2],ids[3],ids[4],cls[4]])
+                    break
+        return match_list
+
     def run(self):
         idx_frame = 0
         downward_counter = [0,0,0,0,0]
         upward_counter = [0,0,0,0,0]
         memory = []
+        vehicle_history = []
+        class_names = load_class_names( 'obj.names')
         
         while self.vdo.grab():
             idx_frame += 1
@@ -100,17 +122,21 @@ class VideoTracker(object):
             im = cv2.cvtColor(ori_im, cv2.COLOR_BGR2RGB)
             
             """depend on data"""
-            up_linepos = 317
+            upward_line_pos = 350
+            downward_line_pos = 350
             line = [(190, 317), (900, 317)]
-            ori_im = cv2.line(ori_im,(190,up_linepos),(900,up_linepos),(255,0,0),3,cv2.LINE_AA)
-            # up_linepos = 500
-            # line = [(160, up_linepos), (1600, up_linepos)]
-            # result_img2 = cv2.line(img,(160,up_linepos),(1600,up_linepos),(255,0,0),3,cv2.LINE_AA)
+            ori_im = cv2.line(ori_im,(190,downward_line_pos),(440,downward_line_pos),(255,0,0),3,cv2.LINE_AA)
+            ori_im = cv2.line(ori_im,(590,upward_line_pos),(820,upward_line_pos),(255,0,0),3,cv2.LINE_AA)
+            # line_pos = 500
+            # line = [(160, line_pos), (1600, line_pos)]
+            # result_img2 = cv2.line(img,(160,line_pos),(1600,line_pos),(255,0,0),3,cv2.LINE_AA)
 
             """do detection"""
             height, width = im.shape[:2]
             sized=cv2.resize(im,(self.detector.width,self.detector.height))
             boxes = do_detect(self.detector, sized, 0.5, 0.4, 1)
+            ori_im = plot_boxes_cv2(ori_im, boxes, savename=None, class_names=class_names)
+
             
             bbx_cls = self.bbox_transform(boxes,ori_im)
             bbx_cls = np.array(bbx_cls)
@@ -137,86 +163,89 @@ class VideoTracker(object):
                     bbox_xyxy = bbx_ids[:, :4]
                     identities = bbx_ids[:, -1]
                     ori_im = draw_boxes(ori_im, bbox_xyxy, identities)
-                
+                    
+            """"count the iou of two bbx to find the match id with class"""
+            match_list = self.iou_cls_ids(bbx_cls,bbx_ids,iou_threshold=0.7)
+            match_list = np.array(match_list)
+            vehicle_history.append(match_list)
+            print("match_list\n",match_list)
+            
             np.random.seed(42)
             COLORS = np.random.randint(0, 255, size=(200, 3),dtype="uint8")
+            current_box = []
+            previous_box = copy.deepcopy(memory)
+            indexIDs = []
+            memory = []
+            bbx = []
             
-            # current_box = []
-            # previous_box = copy.deepcopy(memory)
-            # indexIDs = []
-            # memory = []
-            # bbx = []
-            """extract data from sort"""
-            # for track in outputs:
-            #     current_box.append([track[0], track[1],track[2], track[3],track[5]])
-            #     indexIDs.append(int(track[4]))
-            #     bbx.append([track[0], track[1],track[2], track[3]])
-            #     memory.append([track[0], track[1],track[2], track[3],track[5]])
+            """extract data from match list"""
+            for track in match_list:
+                current_box.append(track)
+                indexIDs.append(int(track[4]))
+                bbx.append([track[0], track[1],track[2], track[3]])
+                memory.append(track)
             
-            # current_box = np.array(current_box,int)
-            # bbx = np.array(bbx,int)
-            # print("current_box\n",current_box)
-            # print("====================")
-            # previous_box = np.array(previous_box,int)
-            # print("previous\n",previous_box)
-            # print("====================")
+            current_box = np.array(current_box,int)
+            bbx = np.array(bbx,int)
+            print("current_box\n",current_box)
+            print("====================")
+            previous_box = np.array(previous_box,int)
+            print("previous\n",previous_box)
+            print("====================")
             
-            # # result_img2 = draw.draw_boxes(img,bbx,indexIDs)
+            # ori_im = draw_boxes(ori_im,bbx,indexIDs)
             
             """data processing  class and  counting """
-            # if len(current_box) > 0:
-            #     i = int(0)
-            #     for box in current_box:
-            #         (x, y) = (int(box[0]), int(box[1]))
-            #         (w, h) = (int(box[2]), int(box[3]))
-            #         color = [int(c) for c in COLORS[indexIDs[i] % len(COLORS)]]
-            #         for k in range(len(previous_box)):
-            #             if VideoTracker.cal_dist(x,y,(previous_box[k][0]),(previous_box[k][1]))  < 50:
-            #                 # print("same vehcile")
-            #                 (x2, y2) = (int(previous_box[k][0]), int(previous_box[k][1]))
-            #                 (w2, h2) = (int(previous_box[k][2]), int(previous_box[k][3]))
-            #                 p0 = (int(x + (w-x)/2), int(y + (h-y)/2))
-            #                 p1 = (int(x2 + (w2-x2)/2), int(y2 + (h2-y2)/2))
-            #                 cv2.line(result_img2, p0, p1, color, 3)
-            #                 if (y2 + (h2-y2)/2) < up_linepos:
-            #                     if VideoTracker.intersect(p0, p1,line[0] ,line[1] ):
-            #                         if box[4] == 0:
-            #                             downward_counter[0] +=1
-            #                         elif box[4] == 1:
-            #                             downward_counter[1] += 1
-            #                         elif box[4] == 2:
-            #                             downward_counter[2] += 1
-            #                         elif box[4] == 3:
-            #                             downward_counter[3] += 1
-            #                         elif box[4] == 4:
-            #                             downward_counter[4] += 1
-            #                 else:
-            #                     if VideoTracker.intersect(p0, p1,line[0] ,line[1] ):
-            #                         if box[4] == 0:
-            #                             upward_counter[0] +=1
-            #                         elif box[4] == 1:
-            #                             upward_counter[1] += 1
-            #                         elif box[4] == 2:
-            #                             upward_counter[2] += 1
-            #                         elif box[4] == 3:
-            #                             upward_counter[3] += 1
-            #                         elif box[4] == 4:
-            #                             upward_counter[4] += 1
+            if len(current_box) > 0:
+                i = int(0)
+                for cur_box in current_box:
+                    # cur_x1,cur_y1,cur_x2,cur_y2 = cur_box[0], cur_box[1],cur_box[2],cur_box[3]
+                    # cur_cx,cur_cy = int((cur_x1+cur_x2)/2),int((cur_y1+cur_y2)/2)
+                    cur_cx,cur_cy = int((cur_box[0]+cur_box[2])/2),int((cur_box[1]+cur_box[3])/2)
+                    color = [int(c) for c in COLORS[indexIDs[i] % len(COLORS)]]
+                    for pre_bbx in previous_box:
+                        pre_x1,pre_y1,pre_x2,pre_y2 = pre_bbx[0], pre_bbx[1],pre_bbx[2],pre_bbx[3]
+                        pre_cx,pre_cy = int((pre_x1+pre_x2)/2),int((pre_y1+pre_y2)/2)
+                        if (cur_box[4] == pre_bbx[4]) or self.cal_dist(cur_cx,cur_cy,pre_cx,pre_cy)  < 50 :
+                            print("cal_dis",self.cal_dist(cur_cx,cur_cy,pre_cx,pre_cy))
+                            print("same vehcile")
+                            if pre_cy < downward_line_pos and cur_cy > downward_line_pos:
+                                if cur_box[5] == 0:
+                                    downward_counter[0] +=1
+                                elif cur_box[5] == 1:
+                                    downward_counter[1] += 1
+                                elif cur_box[5] == 2:
+                                    downward_counter[2] += 1
+                                elif cur_box[5] == 3:
+                                    downward_counter[3] += 1
+                                elif cur_box[5] == 4:
+                                    downward_counter[4] += 1
+                            elif pre_cy > upward_line_pos and cur_cy < upward_line_pos:
+                                if cur_box[5] == 0:
+                                    upward_counter[0] +=1
+                                elif cur_box[5] == 1:
+                                    upward_counter[1] += 1
+                                elif cur_box[5] == 2:
+                                    upward_counter[2] += 1
+                                elif cur_box[5] == 3:
+                                    upward_counter[3] += 1
+                                elif cur_box[5] == 4:
+                                    upward_counter[4] += 1
                                         
             end = time.time()
             print("time: {:.03f}s, fps: {:.03f}".format(end - start, 1 / (end - start)))
             print("===========End of a frame===========")
 
             """左邊文字背景框"""
-            # cv2.rectangle(result_img2, (0, 0), (160, 80), (85, 0, 0), -1)
-            # cv2.putText(result_img2, "Car : " + str(downward_counter[1]), (0, 30), cv2.FONT_HERSHEY_COMPLEX, .6, (170, 255, 50),1)
-            # cv2.putText(result_img2, "motorcycle : " + str(downward_counter[2]), (0, 50), cv2.FONT_HERSHEY_COMPLEX, .6, (50, 255, 50),1)
-            # cv2.putText(result_img2, "truck : " + str(downward_counter[4]), (0, 70), cv2.FONT_HERSHEY_COMPLEX, .6, (255, 250, 150),1)
+            cv2.rectangle(ori_im, (0, 0), (160, 80), (85, 0, 0), -1)
+            cv2.putText(ori_im, "Car : " + str(downward_counter[1]), (0, 30), cv2.FONT_HERSHEY_COMPLEX, .6, (170, 255, 50),1)
+            cv2.putText(ori_im, "motorcycle : " + str(downward_counter[2]), (0, 50), cv2.FONT_HERSHEY_COMPLEX, .6, (50, 255, 50),1)
+            cv2.putText(ori_im, "truck : " + str(downward_counter[4]), (0, 70), cv2.FONT_HERSHEY_COMPLEX, .6, (255, 250, 150),1)
             """右邊文字背景框"""
-            # cv2.rectangle(result_img2, (740, 0), (900, 80), (85, 0, 0), -1)
-            # cv2.putText(result_img2, "Car : " + str(upward_counter[1]), (740, 30), cv2.FONT_HERSHEY_SIMPLEX, .6, (170, 255, 50),1)
-            # cv2.putText(result_img2, "motorcycle : " + str(upward_counter[2]), (740, 50), cv2.FONT_HERSHEY_SIMPLEX, .6, (170, 255, 50),1)
-            # cv2.putText(result_img2, "truck : " + str(upward_counter[4]), (740, 70), cv2.FONT_HERSHEY_SIMPLEX, .6, (170, 255, 50),1)
+            cv2.rectangle(ori_im, (740, 0), (900, 80), (85, 0, 0), -1)
+            cv2.putText(ori_im, "Car : " + str(upward_counter[1]), (740, 30), cv2.FONT_HERSHEY_SIMPLEX, .6, (170, 255, 50),1)
+            cv2.putText(ori_im, "motorcycle : " + str(upward_counter[2]), (740, 50), cv2.FONT_HERSHEY_SIMPLEX, .6, (170, 255, 50),1)
+            cv2.putText(ori_im, "truck : " + str(upward_counter[4]), (740, 70), cv2.FONT_HERSHEY_SIMPLEX, .6, (170, 255, 50),1)
         
             if self.args.display:
                 cv2.imshow("test", ori_im)
@@ -236,7 +265,7 @@ def parse_args():
     parser.add_argument("--frame_interval", type=int, default=2)
     parser.add_argument("--display_width", type=int, default=800)
     parser.add_argument("--display_height", type=int, default=600)
-    parser.add_argument("--save_path", type=str, default="./demo/demo.avi")
+    # parser.add_argument("--save_path", type=str, default="./demo/demo.avi")
     parser.add_argument("--cpu", dest="use_cuda", action="store_false", default=True)
     return parser.parse_args()
 
