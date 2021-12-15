@@ -69,5 +69,5 @@ def non_max_suppression(boxes, max_bbox_overlap, scores=None):
         idxs = np.delete(
             idxs, np.concatenate(
                 ([last], np.where(overlap > max_bbox_overlap)[0])))
-
+    # print("prck in preprocessing",pick)
     return pick

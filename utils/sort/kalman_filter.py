@@ -72,6 +72,7 @@ class KalmanFilter(object):
         mean_pos = measurement
         mean_vel = np.zeros_like(mean_pos)
         mean = np.r_[mean_pos, mean_vel]
+        # print("mean in kf",mean)
 
         std = [
             2 * self._std_weight_position * measurement[3],
@@ -82,7 +83,9 @@ class KalmanFilter(object):
             10 * self._std_weight_velocity * measurement[3],
             1e-5,
             10 * self._std_weight_velocity * measurement[3]]
+
         covariance = np.diag(np.square(std))
+        
         return mean, covariance
 
     def predict(self, mean, covariance):
